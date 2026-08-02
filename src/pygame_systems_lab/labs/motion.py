@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import hypot
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,18 @@ def acceleration_from_input(inputs: InputState, acceleration: float) -> Vec2:
     horizontal = float(inputs.right) - float(inputs.left)
     vertical = float(inputs.down) - float(inputs.up)
     return Vec2(horizontal * acceleration, vertical * acceleration)
+
+
+def distance_between_points(first: Vec2, second: Vec2) -> float:
+    return hypot(second.x - first.x, second.y - first.y)
+
+
+def point_is_inside_circle(point: Vec2, center: Vec2, radius: float) -> bool:
+    return distance_between_points(point, center) <= radius
+
+
+def speed_from_velocity(velocity: Vec2) -> float:
+    return hypot(velocity.x, velocity.y)
 
 
 def apply_friction(velocity: Vec2, friction: float, dt: float) -> Vec2:

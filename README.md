@@ -1,6 +1,6 @@
 # pygame-systems-lab
 
-Small starter project for learning Pygame with a clean `src` layout.
+Small Pygame learning project with a clean `src` layout.
 
 ## Setup
 
@@ -20,7 +20,16 @@ python -m pip install -e ".[dev]"
 python -m pygame_systems_lab
 ```
 
-This opens a window, fills the screen with a background color, processes quit events, and runs at a steady frame rate.
+This launches **Motion Playground**, the first lab.
+
+## Motion Playground controls
+
+- Arrow keys: apply acceleration
+- Space: pause or unpause
+- R: reset to the center
+- Escape or close window: quit
+
+The demo shows a moving circle, a velocity vector, and a small debug overlay with position, velocity, acceleration, FPS, and pause state.
 
 ## Run the test suite
 

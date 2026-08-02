@@ -3,7 +3,10 @@ from pygame_systems_lab.labs.motion import (
     MotionConfig,
     MotionState,
     Vec2,
+    distance_between_points,
     make_initial_state,
+    point_is_inside_circle,
+    speed_from_velocity,
     update_motion,
 )
 
@@ -54,3 +57,18 @@ def test_make_initial_state_starts_in_the_center() -> None:
 
     assert state.position == Vec2(320.0, 240.0)
     assert state.velocity == Vec2(0.0, 0.0)
+
+
+def test_distance_between_points_uses_pythagorean_distance() -> None:
+    assert distance_between_points(Vec2(0.0, 0.0), Vec2(3.0, 4.0)) == 5.0
+
+
+def test_point_is_inside_circle_checks_hit_testing() -> None:
+    center = Vec2(100.0, 100.0)
+
+    assert point_is_inside_circle(Vec2(110.0, 100.0), center, 10.0) is True
+    assert point_is_inside_circle(Vec2(111.0, 100.0), center, 10.0) is False
+
+
+def test_speed_from_velocity_returns_magnitude() -> None:
+    assert speed_from_velocity(Vec2(6.0, 8.0)) == 10.0

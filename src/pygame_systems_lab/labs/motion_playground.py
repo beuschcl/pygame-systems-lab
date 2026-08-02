@@ -2,6 +2,17 @@ from dataclasses import dataclass, field
 
 import pygame
 
+from .history import (
+    SignalMarker,
+    TrailPoint,
+    add_signal_marker,
+    add_trail_point,
+    age_signal_markers,
+    age_trail_points,
+    fade_ratio,
+    remove_expired_signal_markers,
+    remove_expired_trail_points,
+)
 from .motion import (
     InputState,
     MotionConfig,
@@ -15,11 +26,24 @@ from .motion import (
 
 
 @dataclass(frozen=True)
+class PlaygroundActions:
+    running: bool
+    paused: bool
+    selected: bool
+    reset_requested: bool = False
+    toggle_trails_requested: bool = False
+    clear_trails_requested: bool = False
+    drop_signal_requested: bool = False
+
+
+@dataclass(frozen=True)
 class PlaygroundConfig:
     object_name: str = "Motion Circle"
     title: str = "Motion Playground"
     background_color: tuple[int, int, int] = (20, 24, 36)
     circle_color: tuple[int, int, int] = (110, 200, 255)
+    trail_color: tuple[int, int, int] = (110, 200, 255)
+    signal_color: tuple[int, int, int] = (255, 120, 170)
     vector_color: tuple[int, int, int] = (255, 220, 120)
     text_color: tuple[int, int, int] = (240, 240, 240)
     selection_ring_color: tuple[int, int, int] = (255, 255, 255)
@@ -27,6 +51,11 @@ class PlaygroundConfig:
     panel_border_color: tuple[int, int, int] = (85, 96, 130)
     fps: int = 60
     inspector_width: int = 220
+    trail_radius: int = 6
+    signal_radius: int = 10
+    signal_thickness: int = 2
+    trail_lifetime: float = 1.6
+    signal_lifetime: float = 2.4
     vector_scale: float = 0.15
     motion: MotionConfig = field(default_factory=MotionConfig)
 
@@ -53,9 +82,12 @@ def handle_events(
     state: MotionState,
     selected: bool,
     radius: int,
-) -> tuple[bool, bool, bool, bool]:
+) -> PlaygroundActions:
     running = True
     reset_requested = False
+    toggle_trails_requested = False
+    clear_trails_requested = False
+    drop_signal_requested = False
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -67,11 +99,25 @@ def handle_events(
                 reset_requested = True
             elif event.key == pygame.K_SPACE:
                 paused = not paused
+            elif event.key == pygame.K_t:
+                toggle_trails_requested = True
+            elif event.key == pygame.K_c:
+                clear_trails_requested = True
+            elif event.key == pygame.K_s:
+                drop_signal_requested = True
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             click_position = mouse_position_to_vec2(event.pos)
             selected = point_is_inside_circle(click_position, state.position, radius)
 
-    return running, paused, reset_requested, selected
+    return PlaygroundActions(
+        running=running,
+        paused=paused,
+        selected=selected,
+        reset_requested=reset_requested,
+        toggle_trails_requested=toggle_trails_requested,
+        clear_trails_requested=clear_trails_requested,
+        drop_signal_requested=drop_signal_requested,
+    )
 
 
 def draw_debug_overlay(
@@ -80,6 +126,9 @@ def draw_debug_overlay(
     state: MotionState,
     fps: float,
     paused: bool,
+    trails_enabled: bool,
+    trail_count: int,
+    signal_count: int,
     text_color: tuple[int, int, int],
 ) -> None:
     lines = [
@@ -88,6 +137,8 @@ def draw_debug_overlay(
         f"Acceleration: ({state.acceleration.x:.1f}, {state.acceleration.y:.1f})",
         f"FPS: {fps:.1f}",
         f"Paused: {paused}",
+        f"Trails: {trails_enabled} ({trail_count})",
+        f"Signals: {signal_count}",
     ]
 
     y = 10
@@ -111,6 +162,59 @@ def draw_velocity_vector(
     pygame.draw.line(screen, color, start, end, 3)
 
 
+def color_with_fade(
+    color: tuple[int, int, int],
+    age: float,
+    lifetime: float,
+) -> tuple[int, int, int, int]:
+    return (*color, round(255 * fade_ratio(age, lifetime)))
+
+
+def draw_trail_points(
+    screen: pygame.Surface,
+    trail_points: list[TrailPoint],
+    config: PlaygroundConfig,
+) -> None:
+    for point in trail_points:
+        pygame.draw.circle(
+            screen,
+            color_with_fade(config.trail_color, point.age, point.lifetime),
+            (round(point.position.x), round(point.position.y)),
+            config.trail_radius,
+        )
+
+
+def draw_signal_markers(
+    screen: pygame.Surface,
+    signal_markers: list[SignalMarker],
+    config: PlaygroundConfig,
+) -> None:
+    for marker in signal_markers:
+        center = (round(marker.position.x), round(marker.position.y))
+        color = color_with_fade(config.signal_color, marker.age, marker.lifetime)
+        pygame.draw.circle(
+            screen,
+            color,
+            center,
+            config.signal_radius,
+            config.signal_thickness,
+        )
+        pygame.draw.line(
+            screen,
+            color,
+            (center[0] - config.signal_radius, center[1]),
+            (center[0] + config.signal_radius, center[1]),
+            config.signal_thickness,
+        )
+        pygame.draw.line(
+            screen,
+            color,
+            (center[0], center[1] - config.signal_radius),
+            (center[0], center[1] + config.signal_radius),
+            config.signal_thickness,
+        )
+
+
 def draw_selection_ring(
     screen: pygame.Surface,
     state: MotionState,
@@ -131,6 +235,9 @@ def draw_inspector_panel(
     font: pygame.font.Font,
     state: MotionState,
     paused: bool,
+    trails_enabled: bool,
+    trail_count: int,
+    signal_count: int,
     config: PlaygroundConfig,
 ) -> None:
     panel_width = config.inspector_width
@@ -149,6 +256,8 @@ def draw_inspector_panel(
         f"Speed: {speed_from_velocity(state.velocity):.1f}",
         f"Radius: {config.motion.radius}",
         f"Paused: {paused}",
+        f"Trails: {trails_enabled} ({trail_count})",
+        f"Signals: {signal_count}",
     ]
 
     y = 16
@@ -165,9 +274,14 @@ def draw_scene(
     fps: float,
     paused: bool,
     selected: bool,
+    trails_enabled: bool,
+    trail_points: list[TrailPoint],
+    signal_markers: list[SignalMarker],
     config: PlaygroundConfig,
 ) -> None:
     screen.fill(config.background_color)
+    draw_trail_points(screen, trail_points, config)
+    draw_signal_markers(screen, signal_markers, config)
     draw_velocity_vector(screen, state, config.vector_scale, config.vector_color)
     if selected:
         draw_selection_ring(
@@ -182,41 +296,101 @@ def draw_scene(
         (round(state.position.x), round(state.position.y)),
         config.motion.radius,
     )
-    draw_debug_overlay(screen, font, state, fps, paused, config.text_color)
+    draw_debug_overlay(
+        screen,
+        font,
+        state,
+        fps,
+        paused,
+        trails_enabled,
+        len(trail_points),
+        len(signal_markers),
+        config.text_color,
+    )
     if selected:
-        draw_inspector_panel(screen, font, state, paused, config)
+        draw_inspector_panel(
+            screen,
+            font,
+            state,
+            paused,
+            trails_enabled,
+            len(trail_points),
+            len(signal_markers),
+            config,
+        )
     pygame.display.flip()
 
 
 def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     pygame.init()
     pygame.display.set_caption(config.title)
-    screen = pygame.display.set_mode(config.motion.size)
+    screen = pygame.display.set_mode(config.motion.size, pygame.SRCALPHA)
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     state = make_initial_state(config.motion)
+    trail_points: list[TrailPoint] = []
+    signal_markers: list[SignalMarker] = []
     paused = False
     running = True
     selected = False
+    trails_enabled = True
 
     try:
         while running:
             dt = clock.tick(config.fps) / 1000.0
-            running, paused, reset_requested, selected = handle_events(
+            actions = handle_events(
                 paused,
                 state,
                 selected,
                 config.motion.radius,
             )
+            running = actions.running
+            paused = actions.paused
+            selected = actions.selected
 
-            if reset_requested:
+            if actions.toggle_trails_requested:
+                trails_enabled = not trails_enabled
+
+            if actions.clear_trails_requested:
+                trail_points = []
+
+            if actions.drop_signal_requested:
+                signal_markers = add_signal_marker(
+                    signal_markers,
+                    state.position,
+                    config.signal_lifetime,
+                )
+
+            if actions.reset_requested:
                 state = make_initial_state(config.motion)
                 selected = False
 
             if running and not paused:
                 state = update_motion(state, read_input(), dt, config.motion)
+                if trails_enabled:
+                    trail_points = add_trail_point(
+                        trail_points,
+                        state.position,
+                        config.trail_lifetime,
+                    )
 
-            draw_scene(screen, font, state, clock.get_fps(), paused, selected, config)
+            trail_points = remove_expired_trail_points(age_trail_points(trail_points, dt))
+            signal_markers = remove_expired_signal_markers(
+                age_signal_markers(signal_markers, dt)
+            )
+
+            draw_scene(
+                screen,
+                font,
+                state,
+                clock.get_fps(),
+                paused,
+                selected,
+                trails_enabled,
+                trail_points,
+                signal_markers,
+                config,
+            )
     finally:
         pygame.quit()
 

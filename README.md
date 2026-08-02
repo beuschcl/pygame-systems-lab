@@ -28,10 +28,13 @@ This launches **Motion Playground**, the first lab.
 - Left click the circle: select it
 - Left click empty space: clear selection
 - Space: pause or unpause
+- T: toggle trails on or off
+- C: clear all trails
+- S: drop a signal marker
 - R: reset to the center
 - Escape or close window: quit
 
-The demo shows a moving circle, a velocity vector, a debug overlay, and a right-side inspector panel when the circle is selected.
+The demo shows a moving circle, a velocity vector, fading trails, fading signal markers, a debug overlay, and a right-side inspector panel when the circle is selected.
 
 Right now, the inspector panel is only a visual overlay. It does not shrink the motion world's bounds, so the circle can move underneath it. A later camera or layout lab may split the screen into a world viewport and a UI sidebar.
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import pygame
 
+from .collision import RectangleObstacle, check_circle_against_obstacles
 from .history import (
     SignalMarker,
     TrailPoint,
@@ -34,6 +35,15 @@ class PlaygroundActions:
     toggle_trails_requested: bool = False
     clear_trails_requested: bool = False
     drop_signal_requested: bool = False
+    toggle_hitboxes_requested: bool = False
+
+
+def default_obstacles() -> tuple[RectangleObstacle, ...]:
+    return (
+        RectangleObstacle("Top Block", 300.0, 120.0, 140.0, 36.0),
+        RectangleObstacle("Left Block", 150.0, 250.0, 120.0, 36.0),
+        RectangleObstacle("Right Block", 520.0, 340.0, 120.0, 36.0),
+    )
 
 
 @dataclass(frozen=True)
@@ -42,11 +52,13 @@ class PlaygroundConfig:
     title: str = "Motion Playground"
     background_color: tuple[int, int, int] = (20, 24, 36)
     circle_color: tuple[int, int, int] = (110, 200, 255)
+    obstacle_color: tuple[int, int, int] = (80, 110, 145)
     trail_color: tuple[int, int, int] = (110, 200, 255)
     signal_color: tuple[int, int, int] = (255, 120, 170)
     vector_color: tuple[int, int, int] = (255, 220, 120)
     text_color: tuple[int, int, int] = (240, 240, 240)
     selection_ring_color: tuple[int, int, int] = (255, 255, 255)
+    hitbox_color: tuple[int, int, int] = (255, 170, 90)
     panel_background_color: tuple[int, int, int] = (34, 40, 56)
     panel_border_color: tuple[int, int, int] = (85, 96, 130)
     fps: int = 60
@@ -58,6 +70,7 @@ class PlaygroundConfig:
     signal_lifetime: float = 2.4
     vector_scale: float = 0.15
     motion: MotionConfig = field(default_factory=MotionConfig)
+    obstacles: tuple[RectangleObstacle, ...] = field(default_factory=default_obstacles)
 
 
 DEFAULT_CONFIG = PlaygroundConfig()
@@ -88,6 +101,7 @@ def handle_events(
     toggle_trails_requested = False
     clear_trails_requested = False
     drop_signal_requested = False
+    toggle_hitboxes_requested = False
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -105,6 +119,8 @@ def handle_events(
                 clear_trails_requested = True
             elif event.key == pygame.K_s:
                 drop_signal_requested = True
+            elif event.key == pygame.K_h:
+                toggle_hitboxes_requested = True
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             click_position = mouse_position_to_vec2(event.pos)
             selected = point_is_inside_circle(click_position, state.position, radius)
@@ -117,6 +133,7 @@ def handle_events(
         toggle_trails_requested=toggle_trails_requested,
         clear_trails_requested=clear_trails_requested,
         drop_signal_requested=drop_signal_requested,
+        toggle_hitboxes_requested=toggle_hitboxes_requested,
     )
 
 
@@ -129,6 +146,7 @@ def draw_debug_overlay(
     trails_enabled: bool,
     trail_count: int,
     signal_count: int,
+    show_hitboxes: bool,
     text_color: tuple[int, int, int],
 ) -> None:
     lines = [
@@ -139,6 +157,7 @@ def draw_debug_overlay(
         f"Paused: {paused}",
         f"Trails: {trails_enabled} ({trail_count})",
         f"Signals: {signal_count}",
+        f"Hitboxes: {show_hitboxes}",
     ]
 
     y = 10
@@ -160,6 +179,45 @@ def draw_velocity_vector(
         round(state.position.y + state.velocity.y * scale),
     )
     pygame.draw.line(screen, color, start, end, 3)
+
+
+def draw_obstacles(
+    screen: pygame.Surface,
+    obstacles: tuple[RectangleObstacle, ...],
+    color: tuple[int, int, int],
+) -> None:
+    for obstacle in obstacles:
+        pygame.draw.rect(
+            screen,
+            color,
+            pygame.Rect(obstacle.x, obstacle.y, obstacle.width, obstacle.height),
+            border_radius=6,
+        )
+
+
+def draw_hitboxes(
+    screen: pygame.Surface,
+    state: MotionState,
+    obstacles: tuple[RectangleObstacle, ...],
+    radius: int,
+    color: tuple[int, int, int],
+) -> None:
+    for obstacle in obstacles:
+        pygame.draw.rect(
+            screen,
+            color,
+            pygame.Rect(obstacle.x, obstacle.y, obstacle.width, obstacle.height),
+            2,
+            border_radius=6,
+        )
+
+    pygame.draw.circle(
+        screen,
+        color,
+        (round(state.position.x), round(state.position.y)),
+        radius,
+        2,
+    )
 
 
 def color_with_fade(
@@ -238,6 +296,7 @@ def draw_inspector_panel(
     trails_enabled: bool,
     trail_count: int,
     signal_count: int,
+    show_hitboxes: bool,
     config: PlaygroundConfig,
 ) -> None:
     panel_width = config.inspector_width
@@ -258,6 +317,7 @@ def draw_inspector_panel(
         f"Paused: {paused}",
         f"Trails: {trails_enabled} ({trail_count})",
         f"Signals: {signal_count}",
+        f"Hitboxes: {show_hitboxes}",
     ]
 
     y = 16
@@ -277,12 +337,22 @@ def draw_scene(
     trails_enabled: bool,
     trail_points: list[TrailPoint],
     signal_markers: list[SignalMarker],
+    show_hitboxes: bool,
     config: PlaygroundConfig,
 ) -> None:
     screen.fill(config.background_color)
     draw_trail_points(screen, trail_points, config)
     draw_signal_markers(screen, signal_markers, config)
+    draw_obstacles(screen, config.obstacles, config.obstacle_color)
     draw_velocity_vector(screen, state, config.vector_scale, config.vector_color)
+    if show_hitboxes:
+        draw_hitboxes(
+            screen,
+            state,
+            config.obstacles,
+            config.motion.radius,
+            config.hitbox_color,
+        )
     if selected:
         draw_selection_ring(
             screen,
@@ -305,6 +375,7 @@ def draw_scene(
         trails_enabled,
         len(trail_points),
         len(signal_markers),
+        show_hitboxes,
         config.text_color,
     )
     if selected:
@@ -316,6 +387,7 @@ def draw_scene(
             trails_enabled,
             len(trail_points),
             len(signal_markers),
+            show_hitboxes,
             config,
         )
     pygame.display.flip()
@@ -334,6 +406,7 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     running = True
     selected = False
     trails_enabled = True
+    show_hitboxes = False
 
     try:
         while running:
@@ -361,12 +434,29 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                     config.signal_lifetime,
                 )
 
+            if actions.toggle_hitboxes_requested:
+                show_hitboxes = not show_hitboxes
+
             if actions.reset_requested:
                 state = make_initial_state(config.motion)
                 selected = False
 
             if running and not paused:
+                previous_position = state.position
                 state = update_motion(state, read_input(), dt, config.motion)
+                collision = check_circle_against_obstacles(
+                    state.position,
+                    previous_position,
+                    state.velocity,
+                    config.motion.radius,
+                    config.obstacles,
+                )
+                if collision.collided:
+                    state = MotionState(
+                        position=collision.position,
+                        velocity=collision.velocity,
+                        acceleration=state.acceleration,
+                    )
                 if trails_enabled:
                     trail_points = add_trail_point(
                         trail_points,
@@ -389,6 +479,7 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                 trails_enabled,
                 trail_points,
                 signal_markers,
+                show_hitboxes,
                 config,
             )
     finally:

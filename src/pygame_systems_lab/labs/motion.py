@@ -10,6 +10,9 @@ class Vec2:
     def __add__(self, other: "Vec2") -> "Vec2":
         return Vec2(self.x + other.x, self.y + other.y)
 
+    def __sub__(self, other: "Vec2") -> "Vec2":
+        return Vec2(self.x - other.x, self.y - other.y)
+
     def __mul__(self, scalar: float) -> "Vec2":
         return Vec2(self.x * scalar, self.y * scalar)
 
@@ -112,9 +115,23 @@ def update_motion(
     config: MotionConfig,
 ) -> MotionState:
     acceleration = acceleration_from_input(inputs, config.acceleration)
+    return update_motion_with_acceleration(
+        state=state,
+        acceleration=acceleration,
+        dt=dt,
+        config=config,
+    )
+
+
+def update_motion_with_acceleration(
+    state: MotionState,
+    acceleration: Vec2,
+    dt: float,
+    config: MotionConfig,
+) -> MotionState:
     velocity = state.velocity + acceleration * dt
 
-    if not inputs.any_pressed():
+    if acceleration == Vec2(0.0, 0.0):
         velocity = apply_friction(velocity, config.friction, dt)
 
     position = state.position + velocity * dt

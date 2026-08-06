@@ -30,6 +30,8 @@ class AgentState:
     color: tuple[int, int, int]
     target_position: Vec2
     active_detour: Vec2 | None = None
+    task_state: str = "seeking_resource"
+    carried_resource_id: int | None = None
 
 
 DEFAULT_AGENT_COLORS = (
@@ -224,6 +226,8 @@ def update_one_agent_toward_target(
         color=agent.color,
         target_position=target_position,
         active_detour=active_detour,
+        task_state=agent.task_state,
+        carried_resource_id=agent.carried_resource_id,
     )
 
 

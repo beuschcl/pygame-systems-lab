@@ -16,18 +16,14 @@ from .history import (
     remove_expired_trail_points,
 )
 from .motion import MotionConfig, Vec2, speed_from_velocity
-from .multi_agent import (
-    AgentState,
-    create_initial_agents,
-    select_agent_by_point,
-    update_agents,
+from .multi_agent import AgentState, create_initial_agents, select_agent_by_point
+from .resource_loop import (
+    ResourceNode,
+    create_initial_resources,
+    update_one_agent_task,
+    update_resource_loop_for_all_agents,
 )
-from .steering import (
-    SteeringConfig,
-    apply_clicked_target,
-    choose_active_steering_target,
-    distance_to_target,
-)
+from .steering import SteeringConfig, apply_clicked_target, distance_to_target
 
 
 @dataclass(frozen=True)
@@ -55,28 +51,36 @@ def default_obstacles() -> tuple[RectangleObstacle, ...]:
 
 @dataclass(frozen=True)
 class PlaygroundConfig:
-    title: str = "Motion Playground - Lab 6: Multiple Agents"
+    title: str = "Motion Playground - Lab 7: Resource Pickup Loop"
     background_color: tuple[int, int, int] = (20, 24, 36)
     obstacle_color: tuple[int, int, int] = (80, 110, 145)
     signal_color: tuple[int, int, int] = (255, 120, 170)
     text_color: tuple[int, int, int] = (240, 240, 240)
     selection_ring_color: tuple[int, int, int] = (255, 255, 255)
+    carrying_ring_color: tuple[int, int, int] = (255, 220, 120)
     hitbox_color: tuple[int, int, int] = (255, 170, 90)
     panel_background_color: tuple[int, int, int] = (34, 40, 56)
     panel_border_color: tuple[int, int, int] = (85, 96, 130)
-    steering_line_color: tuple[int, int, int] = (150, 210, 255)
+    base_fill_color: tuple[int, int, int] = (80, 140, 240)
+    base_outline_color: tuple[int, int, int] = (170, 210, 255)
+    resource_color: tuple[int, int, int] = (120, 255, 140)
+    resource_collected_color: tuple[int, int, int] = (70, 90, 70)
     fps: int = 60
     agent_count: int = 5
-    inspector_width: int = 260
+    resource_count: int = 6
+    inspector_width: int = 280
     trail_radius: int = 5
     signal_radius: int = 10
     signal_thickness: int = 2
-    target_radius: int = 8
+    resource_radius: int = 8
+    base_radius: int = 28
+    pickup_radius: float = 18.0
     trail_lifetime: float = 1.6
     signal_lifetime: float = 2.4
     motion: MotionConfig = field(default_factory=MotionConfig)
     steering: SteeringConfig = field(default_factory=SteeringConfig)
     obstacles: tuple[RectangleObstacle, ...] = field(default_factory=default_obstacles)
+    base_position: Vec2 = field(default_factory=lambda: Vec2(90.0, 510.0))
     random_seed: int = 7
 
 
@@ -99,10 +103,7 @@ def get_agent_by_id(
     return None
 
 
-def replace_agent(
-    agents: list[AgentState],
-    updated_agent: AgentState,
-) -> list[AgentState]:
+def replace_agent(agents: list[AgentState], updated_agent: AgentState) -> list[AgentState]:
     return [updated_agent if agent.id == updated_agent.id else agent for agent in agents]
 
 
@@ -170,6 +171,14 @@ def format_target(target_position: Vec2) -> str:
     return f"({target_position.x:.1f}, {target_position.y:.1f})"
 
 
+def count_available_resources(resources: list[ResourceNode] | tuple[ResourceNode, ...]) -> int:
+    return sum(1 for resource in resources if resource.available)
+
+
+def count_carried_resources(agents: list[AgentState] | tuple[AgentState, ...]) -> int:
+    return sum(1 for agent in agents if agent.carried_resource_id is not None)
+
+
 def draw_debug_overlay(
     screen: pygame.Surface,
     font: pygame.font.Font,
@@ -177,10 +186,11 @@ def draw_debug_overlay(
     paused: bool,
     trails_enabled: bool,
     total_trail_count: int,
-    signal_count: int,
     show_hitboxes: bool,
     steering_enabled: bool,
-    agent_count: int,
+    agents: list[AgentState] | tuple[AgentState, ...],
+    resources: list[ResourceNode] | tuple[ResourceNode, ...],
+    collected_resource_count: int,
     selected_agent: AgentState | None,
     text_color: tuple[int, int, int],
 ) -> None:
@@ -192,10 +202,12 @@ def draw_debug_overlay(
         f"FPS: {fps:.1f}",
         f"Paused: {paused}",
         f"Steering: {steering_enabled}",
-        f"Agents: {agent_count}",
+        f"Agent Count: {len(agents)}",
         f"Selected: {selected_text}",
+        f"Available Resources: {count_available_resources(resources)}",
+        f"Carried Resources: {count_carried_resources(agents)}",
+        f"Collected Count: {collected_resource_count}",
         f"Trails: {trails_enabled} ({total_trail_count})",
-        f"Signals: {signal_count}",
         f"Hitboxes: {show_hitboxes}",
     ]
 
@@ -204,51 +216,6 @@ def draw_debug_overlay(
         surface = font.render(line, True, text_color)
         screen.blit(surface, (10, y))
         y += 22
-
-
-def draw_target_marker(
-    screen: pygame.Surface,
-    target_position: Vec2,
-    color: tuple[int, int, int],
-    radius: int,
-) -> None:
-    center = (round(target_position.x), round(target_position.y))
-    pygame.draw.circle(
-        screen,
-        color,
-        center,
-        radius,
-        2,
-    )
-    pygame.draw.line(
-        screen,
-        color,
-        (center[0] - radius, center[1]),
-        (center[0] + radius, center[1]),
-        2,
-    )
-    pygame.draw.line(
-        screen,
-        color,
-        (center[0], center[1] - radius),
-        (center[0], center[1] + radius),
-        2,
-    )
-
-
-def draw_steering_line(
-    screen: pygame.Surface,
-    start: Vec2,
-    target_position: Vec2,
-    color: tuple[int, int, int],
-) -> None:
-    pygame.draw.line(
-        screen,
-        color,
-        (round(start.x), round(start.y)),
-        (round(target_position.x), round(target_position.y)),
-        1,
-    )
 
 
 def draw_obstacles(
@@ -263,6 +230,51 @@ def draw_obstacles(
             pygame.Rect(obstacle.x, obstacle.y, obstacle.width, obstacle.height),
             border_radius=6,
         )
+
+
+def draw_base(
+    screen: pygame.Surface,
+    font: pygame.font.Font,
+    position: Vec2,
+    radius: int,
+    fill_color: tuple[int, int, int],
+    outline_color: tuple[int, int, int],
+    text_color: tuple[int, int, int],
+) -> None:
+    center = (round(position.x), round(position.y))
+    pygame.draw.circle(screen, fill_color, center, radius)
+    pygame.draw.circle(screen, outline_color, center, radius, 3)
+    label = font.render("BASE", True, text_color)
+    screen.blit(label, (center[0] - 24, center[1] - 10))
+
+
+def draw_resources(
+    screen: pygame.Surface,
+    resources: list[ResourceNode] | tuple[ResourceNode, ...],
+    available_color: tuple[int, int, int],
+    collected_color: tuple[int, int, int],
+    radius: int,
+) -> None:
+    for resource in resources:
+        center = (round(resource.position.x), round(resource.position.y))
+        color = available_color if resource.available else collected_color
+        pygame.draw.circle(screen, color, center, radius)
+        pygame.draw.circle(screen, (25, 30, 40), center, radius, 2)
+        if not resource.available:
+            pygame.draw.line(
+                screen,
+                (25, 30, 40),
+                (center[0] - radius, center[1] - radius),
+                (center[0] + radius, center[1] + radius),
+                2,
+            )
+            pygame.draw.line(
+                screen,
+                (25, 30, 40),
+                (center[0] - radius, center[1] + radius),
+                (center[0] + radius, center[1] - radius),
+                2,
+            )
 
 
 def draw_hitboxes(
@@ -303,17 +315,18 @@ def draw_trail_points(
     screen: pygame.Surface,
     trails_by_agent: dict[int, list[TrailPoint]],
     agents: list[AgentState] | tuple[AgentState, ...],
-    config: PlaygroundConfig,
+    trail_radius: int,
+    fallback_color: tuple[int, int, int],
 ) -> None:
     color_by_agent = {agent.id: agent.color for agent in agents}
     for agent_id, trail_points in trails_by_agent.items():
-        color = color_by_agent.get(agent_id, config.text_color)
+        color = color_by_agent.get(agent_id, fallback_color)
         for point in trail_points:
             pygame.draw.circle(
                 screen,
                 color_with_fade(color, point.age, point.lifetime),
                 (round(point.position.x), round(point.position.y)),
-                config.trail_radius,
+                trail_radius,
             )
 
 
@@ -363,6 +376,29 @@ def draw_selection_ring(
     )
 
 
+def draw_agent_body(
+    screen: pygame.Surface,
+    agent: AgentState,
+    radius: int,
+    carrying_ring_color: tuple[int, int, int],
+) -> None:
+    center = (round(agent.position.x), round(agent.position.y))
+    pygame.draw.circle(
+        screen,
+        agent.color,
+        center,
+        radius,
+    )
+    if agent.carried_resource_id is not None:
+        pygame.draw.circle(
+            screen,
+            carrying_ring_color,
+            center,
+            radius - 5,
+            3,
+        )
+
+
 def draw_inspector_panel(
     screen: pygame.Surface,
     font: pygame.font.Font,
@@ -376,10 +412,16 @@ def draw_inspector_panel(
     pygame.draw.rect(screen, config.panel_background_color, panel_rect)
     pygame.draw.rect(screen, config.panel_border_color, panel_rect, 2)
 
+    carrying_text = "None"
+    if selected_agent.carried_resource_id is not None:
+        carrying_text = str(selected_agent.carried_resource_id)
+
     lines = [
         "Inspector",
         f"ID: {selected_agent.id}",
         f"Name: {selected_agent.name}",
+        f"Task: {selected_agent.task_state}",
+        f"Carrying: {carrying_text}",
         f"Position: ({selected_agent.position.x:.1f}, {selected_agent.position.y:.1f})",
         f"Velocity: ({selected_agent.velocity.x:.1f}, {selected_agent.velocity.y:.1f})",
         f"Acceleration: ({selected_agent.acceleration.x:.1f}, {selected_agent.acceleration.y:.1f})",
@@ -413,6 +455,7 @@ def draw_scene(
     screen: pygame.Surface,
     font: pygame.font.Font,
     agents: list[AgentState],
+    resources: list[ResourceNode],
     fps: float,
     paused: bool,
     selected_agent_id: int | None,
@@ -421,38 +464,37 @@ def draw_scene(
     signal_markers: list[SignalMarker],
     show_hitboxes: bool,
     steering_enabled: bool,
+    collected_resource_count: int,
     config: PlaygroundConfig,
 ) -> None:
     screen.fill(config.background_color)
-    draw_trail_points(screen, trails_by_agent, agents, config)
+    draw_trail_points(
+        screen=screen,
+        trails_by_agent=trails_by_agent,
+        agents=agents,
+        trail_radius=config.trail_radius,
+        fallback_color=config.text_color,
+    )
     draw_signal_markers(screen, signal_markers, config)
     draw_obstacles(screen, config.obstacles, config.obstacle_color)
+    draw_base(
+        screen=screen,
+        font=font,
+        position=config.base_position,
+        radius=config.base_radius,
+        fill_color=config.base_fill_color,
+        outline_color=config.base_outline_color,
+        text_color=config.text_color,
+    )
+    draw_resources(
+        screen=screen,
+        resources=resources,
+        available_color=config.resource_color,
+        collected_color=config.resource_collected_color,
+        radius=config.resource_radius,
+    )
 
     selected_agent = get_agent_by_id(agents, selected_agent_id)
-
-    for agent in agents:
-        draw_target_marker(
-            screen=screen,
-            target_position=agent.target_position,
-            color=agent.color,
-            radius=config.target_radius,
-        )
-        if steering_enabled:
-            target_choice = choose_active_steering_target(
-                position=agent.position,
-                target=agent.target_position,
-                obstacles=config.obstacles,
-                config=config.steering,
-                circle_radius=config.motion.radius,
-                active_detour=agent.active_detour,
-            )
-            if target_choice.active_target is not None:
-                draw_steering_line(
-                    screen=screen,
-                    start=agent.position,
-                    target_position=target_choice.active_target,
-                    color=config.steering_line_color,
-                )
 
     if show_hitboxes:
         draw_hitboxes(
@@ -464,11 +506,11 @@ def draw_scene(
         )
 
     for agent in agents:
-        pygame.draw.circle(
-            screen,
-            agent.color,
-            (round(agent.position.x), round(agent.position.y)),
-            config.motion.radius,
+        draw_agent_body(
+            screen=screen,
+            agent=agent,
+            radius=config.motion.radius,
+            carrying_ring_color=config.carrying_ring_color,
         )
         if selected_agent is not None and agent.id == selected_agent.id:
             draw_selection_ring(
@@ -485,10 +527,11 @@ def draw_scene(
         paused=paused,
         trails_enabled=trails_enabled,
         total_trail_count=total_trail_count(trails_by_agent),
-        signal_count=len(signal_markers),
         show_hitboxes=show_hitboxes,
         steering_enabled=steering_enabled,
-        agent_count=len(agents),
+        agents=agents,
+        resources=resources,
+        collected_resource_count=collected_resource_count,
         selected_agent=selected_agent,
         text_color=config.text_color,
     )
@@ -502,6 +545,27 @@ def draw_scene(
     pygame.display.flip()
 
 
+def initialize_agent_tasks(
+    agents: list[AgentState],
+    resources: list[ResourceNode],
+    base_position: Vec2,
+    base_radius: float,
+    pickup_radius: float,
+) -> tuple[list[AgentState], list[ResourceNode]]:
+    updated_agents: list[AgentState] = []
+    updated_resources = list(resources)
+    for agent in agents:
+        task_agent, updated_resources, _ = update_one_agent_task(
+            agent=agent,
+            resources=updated_resources,
+            base_position=base_position,
+            base_radius=base_radius,
+            pickup_radius=pickup_radius,
+        )
+        updated_agents.append(task_agent)
+    return updated_agents, updated_resources
+
+
 def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     pygame.init()
     pygame.display.set_caption(config.title)
@@ -509,6 +573,7 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
     random_source = Random(config.random_seed)
+
     agents = create_initial_agents(
         agent_count=config.agent_count,
         world_size=config.motion.size,
@@ -517,8 +582,25 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
         steering_config=config.steering,
         random_source=random_source,
     )
+    resources = create_initial_resources(
+        resource_count=config.resource_count,
+        world_size=config.motion.size,
+        circle_radius=config.motion.radius,
+        obstacles=config.obstacles,
+        steering_config=config.steering,
+        random_source=random_source,
+    )
+    agents, resources = initialize_agent_tasks(
+        agents=agents,
+        resources=resources,
+        base_position=config.base_position,
+        base_radius=config.base_radius,
+        pickup_radius=config.pickup_radius,
+    )
+
     trails_by_agent: dict[int, list[TrailPoint]] = {agent.id: [] for agent in agents}
     signal_markers: list[SignalMarker] = []
+    collected_resource_count = 0
     paused = False
     running = True
     selected_agent_id: int | None = None
@@ -585,6 +667,8 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                             color=selected_agent.color,
                             target_position=safe_target,
                             active_detour=None,
+                            task_state=selected_agent.task_state,
+                            carried_resource_id=selected_agent.carried_resource_id,
                         ),
                     )
 
@@ -597,18 +681,42 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                     steering_config=config.steering,
                     random_source=random_source,
                 )
+                resources = create_initial_resources(
+                    resource_count=config.resource_count,
+                    world_size=config.motion.size,
+                    circle_radius=config.motion.radius,
+                    obstacles=config.obstacles,
+                    steering_config=config.steering,
+                    random_source=random_source,
+                )
+                agents, resources = initialize_agent_tasks(
+                    agents=agents,
+                    resources=resources,
+                    base_position=config.base_position,
+                    base_radius=config.base_radius,
+                    pickup_radius=config.pickup_radius,
+                )
                 trails_by_agent = {agent.id: [] for agent in agents}
+                collected_resource_count = 0
                 selected_agent_id = None
 
             if running and not paused and steering_enabled:
-                agents = update_agents(
+                update_result = update_resource_loop_for_all_agents(
                     agents=agents,
+                    resources=resources,
                     dt=dt,
                     motion_config=config.motion,
                     steering_config=config.steering,
                     obstacles=config.obstacles,
+                    base_position=config.base_position,
+                    base_radius=config.base_radius,
+                    pickup_radius=config.pickup_radius,
                     random_source=random_source,
                 )
+                agents = update_result.agents
+                resources = update_result.resources
+                collected_resource_count += update_result.collected_increment
+
                 for agent in agents:
                     trails_by_agent.setdefault(agent.id, [])
                     if trails_enabled:
@@ -627,6 +735,7 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                 screen=screen,
                 font=font,
                 agents=agents,
+                resources=resources,
                 fps=clock.get_fps(),
                 paused=paused,
                 selected_agent_id=selected_agent_id,
@@ -635,6 +744,7 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                 signal_markers=signal_markers,
                 show_hitboxes=show_hitboxes,
                 steering_enabled=steering_enabled,
+                collected_resource_count=collected_resource_count,
                 config=config,
             )
     finally:

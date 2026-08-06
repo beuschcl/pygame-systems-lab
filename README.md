@@ -20,7 +20,7 @@ python -m pip install -e ".[dev]"
 python -m pygame_systems_lab
 ```
 
-This launches **Motion Playground (Lab 6: Multiple Agents)**.
+This launches **Motion Playground (Lab 7: Resource Pickup Loop)**.
 
 ## Motion Playground controls
 
@@ -35,7 +35,7 @@ This launches **Motion Playground (Lab 6: Multiple Agents)**.
 - R: reset all agents
 - Escape or close window: quit
 
-The demo shows multiple autonomous agents that steer toward targets, obstacle rectangles, fading trails, fading signal markers, a debug overlay, and a right-side inspector panel for the selected agent.
+The demo shows multiple autonomous agents that seek resources, carry them back to base, and increase a collected count. It also includes obstacle rectangles, fading trails, fading signal markers, a debug overlay, and a right-side inspector panel for the selected agent.
 
 ## Run the test suite
 

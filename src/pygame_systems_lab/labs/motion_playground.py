@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
+from random import Random
 
 import pygame
 
-from .collision import RectangleObstacle, check_circle_against_obstacles
+from .collision import RectangleObstacle
 from .history import (
     SignalMarker,
     TrailPoint,
@@ -14,24 +15,18 @@ from .history import (
     remove_expired_signal_markers,
     remove_expired_trail_points,
 )
-from .motion import (
-    InputState,
-    MotionConfig,
-    MotionState,
-    Vec2,
-    make_initial_state,
-    point_is_inside_circle,
-    speed_from_velocity,
-    update_motion,
-    update_motion_with_acceleration,
+from .motion import MotionConfig, Vec2, speed_from_velocity
+from .multi_agent import (
+    AgentState,
+    create_initial_agents,
+    select_agent_by_point,
+    update_agents,
 )
 from .steering import (
     SteeringConfig,
     apply_clicked_target,
     choose_active_steering_target,
-    desired_velocity_toward_target,
     distance_to_target,
-    steering_acceleration_toward_velocity,
 )
 
 
@@ -39,7 +34,7 @@ from .steering import (
 class PlaygroundActions:
     running: bool
     paused: bool
-    selected: bool
+    selected_agent_id: int | None
     reset_requested: bool = False
     toggle_trails_requested: bool = False
     clear_trails_requested: bool = False
@@ -60,58 +55,61 @@ def default_obstacles() -> tuple[RectangleObstacle, ...]:
 
 @dataclass(frozen=True)
 class PlaygroundConfig:
-    object_name: str = "Motion Circle"
-    title: str = "Motion Playground"
+    title: str = "Motion Playground - Lab 6: Multiple Agents"
     background_color: tuple[int, int, int] = (20, 24, 36)
-    circle_color: tuple[int, int, int] = (110, 200, 255)
     obstacle_color: tuple[int, int, int] = (80, 110, 145)
-    trail_color: tuple[int, int, int] = (110, 200, 255)
     signal_color: tuple[int, int, int] = (255, 120, 170)
-    target_color: tuple[int, int, int] = (130, 255, 150)
-    detour_color: tuple[int, int, int] = (255, 180, 110)
-    steering_line_color: tuple[int, int, int] = (130, 255, 150)
-    vector_color: tuple[int, int, int] = (255, 220, 120)
     text_color: tuple[int, int, int] = (240, 240, 240)
     selection_ring_color: tuple[int, int, int] = (255, 255, 255)
     hitbox_color: tuple[int, int, int] = (255, 170, 90)
     panel_background_color: tuple[int, int, int] = (34, 40, 56)
     panel_border_color: tuple[int, int, int] = (85, 96, 130)
+    steering_line_color: tuple[int, int, int] = (150, 210, 255)
     fps: int = 60
-    inspector_width: int = 220
-    trail_radius: int = 6
+    agent_count: int = 5
+    inspector_width: int = 260
+    trail_radius: int = 5
     signal_radius: int = 10
     signal_thickness: int = 2
-    target_radius: int = 10
-    detour_radius: int = 8
+    target_radius: int = 8
     trail_lifetime: float = 1.6
     signal_lifetime: float = 2.4
-    vector_scale: float = 0.15
     motion: MotionConfig = field(default_factory=MotionConfig)
     steering: SteeringConfig = field(default_factory=SteeringConfig)
     obstacles: tuple[RectangleObstacle, ...] = field(default_factory=default_obstacles)
+    random_seed: int = 7
 
 
 DEFAULT_CONFIG = PlaygroundConfig()
-
-
-def read_input() -> InputState:
-    keys = pygame.key.get_pressed()
-    return InputState(
-        left=bool(keys[pygame.K_LEFT]),
-        right=bool(keys[pygame.K_RIGHT]),
-        up=bool(keys[pygame.K_UP]),
-        down=bool(keys[pygame.K_DOWN]),
-    )
 
 
 def mouse_position_to_vec2(position: tuple[int, int]) -> Vec2:
     return Vec2(float(position[0]), float(position[1]))
 
 
+def get_agent_by_id(
+    agents: list[AgentState] | tuple[AgentState, ...],
+    agent_id: int | None,
+) -> AgentState | None:
+    if agent_id is None:
+        return None
+    for agent in agents:
+        if agent.id == agent_id:
+            return agent
+    return None
+
+
+def replace_agent(
+    agents: list[AgentState],
+    updated_agent: AgentState,
+) -> list[AgentState]:
+    return [updated_agent if agent.id == updated_agent.id else agent for agent in agents]
+
+
 def handle_events(
     paused: bool,
-    state: MotionState,
-    selected: bool,
+    agents: list[AgentState] | tuple[AgentState, ...],
+    selected_agent_id: int | None,
     radius: int,
 ) -> PlaygroundActions:
     running = True
@@ -146,17 +144,17 @@ def handle_events(
                 toggle_steering_requested = True
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             click_position = mouse_position_to_vec2(event.pos)
-            if point_is_inside_circle(click_position, state.position, radius):
-                selected = True
-            else:
-                selected = False
+            clicked_agent = select_agent_by_point(agents, click_position, radius)
+            if clicked_agent is not None:
+                selected_agent_id = clicked_agent.id
+            elif selected_agent_id is not None:
                 target_position = click_position
                 target_changed = True
 
     return PlaygroundActions(
         running=running,
         paused=paused,
-        selected=selected,
+        selected_agent_id=selected_agent_id,
         reset_requested=reset_requested,
         toggle_trails_requested=toggle_trails_requested,
         clear_trails_requested=clear_trails_requested,
@@ -168,46 +166,37 @@ def handle_events(
     )
 
 
-def format_target(target_position: Vec2 | None) -> str:
-    if target_position is None:
-        return "None"
+def format_target(target_position: Vec2) -> str:
     return f"({target_position.x:.1f}, {target_position.y:.1f})"
-
-
-def target_distance_text(state: MotionState, target_position: Vec2 | None) -> str:
-    if target_position is None:
-        return "None"
-    return f"{distance_to_target(state.position, target_position):.1f}"
 
 
 def draw_debug_overlay(
     screen: pygame.Surface,
     font: pygame.font.Font,
-    state: MotionState,
     fps: float,
     paused: bool,
     trails_enabled: bool,
-    trail_count: int,
+    total_trail_count: int,
     signal_count: int,
     show_hitboxes: bool,
     steering_enabled: bool,
-    target_position: Vec2 | None,
-    detour_active: bool,
+    agent_count: int,
+    selected_agent: AgentState | None,
     text_color: tuple[int, int, int],
 ) -> None:
+    selected_text = "None"
+    if selected_agent is not None:
+        selected_text = f"{selected_agent.id} / {selected_agent.name}"
+
     lines = [
-        f"Position: ({state.position.x:.1f}, {state.position.y:.1f})",
-        f"Velocity: ({state.velocity.x:.1f}, {state.velocity.y:.1f})",
-        f"Acceleration: ({state.acceleration.x:.1f}, {state.acceleration.y:.1f})",
         f"FPS: {fps:.1f}",
         f"Paused: {paused}",
-        f"Trails: {trails_enabled} ({trail_count})",
+        f"Steering: {steering_enabled}",
+        f"Agents: {agent_count}",
+        f"Selected: {selected_text}",
+        f"Trails: {trails_enabled} ({total_trail_count})",
         f"Signals: {signal_count}",
         f"Hitboxes: {show_hitboxes}",
-        f"Steering: {steering_enabled}",
-        f"Target: {format_target(target_position)}",
-        f"Target Distance: {target_distance_text(state, target_position)}",
-        f"Detour Active: {detour_active}",
     ]
 
     y = 10
@@ -215,20 +204,6 @@ def draw_debug_overlay(
         surface = font.render(line, True, text_color)
         screen.blit(surface, (10, y))
         y += 22
-
-
-def draw_velocity_vector(
-    screen: pygame.Surface,
-    state: MotionState,
-    scale: float,
-    color: tuple[int, int, int],
-) -> None:
-    start = (round(state.position.x), round(state.position.y))
-    end = (
-        round(state.position.x + state.velocity.x * scale),
-        round(state.position.y + state.velocity.y * scale),
-    )
-    pygame.draw.line(screen, color, start, end, 3)
 
 
 def draw_target_marker(
@@ -263,16 +238,16 @@ def draw_target_marker(
 
 def draw_steering_line(
     screen: pygame.Surface,
-    state: MotionState,
+    start: Vec2,
     target_position: Vec2,
     color: tuple[int, int, int],
 ) -> None:
     pygame.draw.line(
         screen,
         color,
-        (round(state.position.x), round(state.position.y)),
+        (round(start.x), round(start.y)),
         (round(target_position.x), round(target_position.y)),
-        2,
+        1,
     )
 
 
@@ -292,7 +267,7 @@ def draw_obstacles(
 
 def draw_hitboxes(
     screen: pygame.Surface,
-    state: MotionState,
+    agents: list[AgentState] | tuple[AgentState, ...],
     obstacles: tuple[RectangleObstacle, ...],
     radius: int,
     color: tuple[int, int, int],
@@ -306,13 +281,14 @@ def draw_hitboxes(
             border_radius=6,
         )
 
-    pygame.draw.circle(
-        screen,
-        color,
-        (round(state.position.x), round(state.position.y)),
-        radius,
-        2,
-    )
+    for agent in agents:
+        pygame.draw.circle(
+            screen,
+            color,
+            (round(agent.position.x), round(agent.position.y)),
+            radius,
+            2,
+        )
 
 
 def color_with_fade(
@@ -325,16 +301,20 @@ def color_with_fade(
 
 def draw_trail_points(
     screen: pygame.Surface,
-    trail_points: list[TrailPoint],
+    trails_by_agent: dict[int, list[TrailPoint]],
+    agents: list[AgentState] | tuple[AgentState, ...],
     config: PlaygroundConfig,
 ) -> None:
-    for point in trail_points:
-        pygame.draw.circle(
-            screen,
-            color_with_fade(config.trail_color, point.age, point.lifetime),
-            (round(point.position.x), round(point.position.y)),
-            config.trail_radius,
-        )
+    color_by_agent = {agent.id: agent.color for agent in agents}
+    for agent_id, trail_points in trails_by_agent.items():
+        color = color_by_agent.get(agent_id, config.text_color)
+        for point in trail_points:
+            pygame.draw.circle(
+                screen,
+                color_with_fade(color, point.age, point.lifetime),
+                (round(point.position.x), round(point.position.y)),
+                config.trail_radius,
+            )
 
 
 def draw_signal_markers(
@@ -370,31 +350,23 @@ def draw_signal_markers(
 
 def draw_selection_ring(
     screen: pygame.Surface,
-    state: MotionState,
+    agent: AgentState,
     radius: int,
     color: tuple[int, int, int],
 ) -> None:
     pygame.draw.circle(
         screen,
         color,
-        (round(state.position.x), round(state.position.y)),
-        radius + 6,
-        3,
+        (round(agent.position.x), round(agent.position.y)),
+        radius + 5,
+        2,
     )
 
 
 def draw_inspector_panel(
     screen: pygame.Surface,
     font: pygame.font.Font,
-    state: MotionState,
-    paused: bool,
-    trails_enabled: bool,
-    trail_count: int,
-    signal_count: int,
-    show_hitboxes: bool,
-    steering_enabled: bool,
-    target_position: Vec2 | None,
-    detour_active: bool,
+    selected_agent: AgentState,
     config: PlaygroundConfig,
 ) -> None:
     panel_width = config.inspector_width
@@ -406,20 +378,14 @@ def draw_inspector_panel(
 
     lines = [
         "Inspector",
-        f"Name: {config.object_name}",
-        f"Position: ({state.position.x:.1f}, {state.position.y:.1f})",
-        f"Velocity: ({state.velocity.x:.1f}, {state.velocity.y:.1f})",
-        f"Acceleration: ({state.acceleration.x:.1f}, {state.acceleration.y:.1f})",
-        f"Speed: {speed_from_velocity(state.velocity):.1f}",
-        f"Radius: {config.motion.radius}",
-        f"Paused: {paused}",
-        f"Trails: {trails_enabled} ({trail_count})",
-        f"Signals: {signal_count}",
-        f"Hitboxes: {show_hitboxes}",
-        f"Steering: {steering_enabled}",
-        f"Target: {format_target(target_position)}",
-        f"Target Distance: {target_distance_text(state, target_position)}",
-        f"Detour Active: {detour_active}",
+        f"ID: {selected_agent.id}",
+        f"Name: {selected_agent.name}",
+        f"Position: ({selected_agent.position.x:.1f}, {selected_agent.position.y:.1f})",
+        f"Velocity: ({selected_agent.velocity.x:.1f}, {selected_agent.velocity.y:.1f})",
+        f"Acceleration: ({selected_agent.acceleration.x:.1f}, {selected_agent.acceleration.y:.1f})",
+        f"Speed: {speed_from_velocity(selected_agent.velocity):.1f}",
+        f"Target: {format_target(selected_agent.target_position)}",
+        f"Target Dist: {distance_to_target(selected_agent.position, selected_agent.target_position):.1f}",
     ]
 
     y = 16
@@ -429,100 +395,109 @@ def draw_inspector_panel(
         y += 24
 
 
+def total_trail_count(trails_by_agent: dict[int, list[TrailPoint]]) -> int:
+    return sum(len(points) for points in trails_by_agent.values())
+
+
+def age_and_prune_trails(
+    trails_by_agent: dict[int, list[TrailPoint]],
+    dt: float,
+) -> dict[int, list[TrailPoint]]:
+    return {
+        agent_id: remove_expired_trail_points(age_trail_points(points, dt))
+        for agent_id, points in trails_by_agent.items()
+    }
+
+
 def draw_scene(
     screen: pygame.Surface,
     font: pygame.font.Font,
-    state: MotionState,
+    agents: list[AgentState],
     fps: float,
     paused: bool,
-    selected: bool,
+    selected_agent_id: int | None,
     trails_enabled: bool,
-    trail_points: list[TrailPoint],
+    trails_by_agent: dict[int, list[TrailPoint]],
     signal_markers: list[SignalMarker],
     show_hitboxes: bool,
     steering_enabled: bool,
-    target_position: Vec2 | None,
-    active_target_position: Vec2 | None,
-    detour_position: Vec2 | None,
-    detour_active: bool,
     config: PlaygroundConfig,
 ) -> None:
     screen.fill(config.background_color)
-    draw_trail_points(screen, trail_points, config)
+    draw_trail_points(screen, trails_by_agent, agents, config)
     draw_signal_markers(screen, signal_markers, config)
     draw_obstacles(screen, config.obstacles, config.obstacle_color)
-    if target_position is not None:
+
+    selected_agent = get_agent_by_id(agents, selected_agent_id)
+
+    for agent in agents:
         draw_target_marker(
-            screen,
-            target_position,
-            config.target_color,
-            config.target_radius,
+            screen=screen,
+            target_position=agent.target_position,
+            color=agent.color,
+            radius=config.target_radius,
         )
-    if detour_position is not None:
-        draw_target_marker(
-            screen,
-            detour_position,
-            config.detour_color,
-            config.detour_radius,
-        )
-    if steering_enabled and active_target_position is not None:
-        draw_steering_line(
-            screen,
-            state,
-            active_target_position,
-            config.steering_line_color,
-        )
-    draw_velocity_vector(screen, state, config.vector_scale, config.vector_color)
+        if steering_enabled:
+            target_choice = choose_active_steering_target(
+                position=agent.position,
+                target=agent.target_position,
+                obstacles=config.obstacles,
+                config=config.steering,
+                circle_radius=config.motion.radius,
+                active_detour=agent.active_detour,
+            )
+            if target_choice.active_target is not None:
+                draw_steering_line(
+                    screen=screen,
+                    start=agent.position,
+                    target_position=target_choice.active_target,
+                    color=config.steering_line_color,
+                )
+
     if show_hitboxes:
         draw_hitboxes(
-            screen,
-            state,
-            config.obstacles,
-            config.motion.radius,
-            config.hitbox_color,
+            screen=screen,
+            agents=agents,
+            obstacles=config.obstacles,
+            radius=config.motion.radius,
+            color=config.hitbox_color,
         )
-    if selected:
-        draw_selection_ring(
+
+    for agent in agents:
+        pygame.draw.circle(
             screen,
-            state,
+            agent.color,
+            (round(agent.position.x), round(agent.position.y)),
             config.motion.radius,
-            config.selection_ring_color,
         )
-    pygame.draw.circle(
-        screen,
-        config.circle_color,
-        (round(state.position.x), round(state.position.y)),
-        config.motion.radius,
-    )
+        if selected_agent is not None and agent.id == selected_agent.id:
+            draw_selection_ring(
+                screen=screen,
+                agent=agent,
+                radius=config.motion.radius,
+                color=config.selection_ring_color,
+            )
+
     draw_debug_overlay(
-        screen,
-        font,
-        state,
-        fps,
-        paused,
-        trails_enabled,
-        len(trail_points),
-        len(signal_markers),
-        show_hitboxes,
-        steering_enabled,
-        target_position,
-        detour_active,
-        config.text_color,
+        screen=screen,
+        font=font,
+        fps=fps,
+        paused=paused,
+        trails_enabled=trails_enabled,
+        total_trail_count=total_trail_count(trails_by_agent),
+        signal_count=len(signal_markers),
+        show_hitboxes=show_hitboxes,
+        steering_enabled=steering_enabled,
+        agent_count=len(agents),
+        selected_agent=selected_agent,
+        text_color=config.text_color,
     )
-    if selected:
+    if selected_agent is not None:
         draw_inspector_panel(
-            screen,
-            font,
-            state,
-            paused,
-            trails_enabled,
-            len(trail_points),
-            len(signal_markers),
-            show_hitboxes,
-            steering_enabled,
-            target_position,
-            detour_active,
-            config,
+            screen=screen,
+            font=font,
+            selected_agent=selected_agent,
+            config=config,
         )
     pygame.display.flip()
 
@@ -533,17 +508,21 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     screen = pygame.display.set_mode(config.motion.size, pygame.SRCALPHA)
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
-    state = make_initial_state(config.motion)
-    trail_points: list[TrailPoint] = []
+    random_source = Random(config.random_seed)
+    agents = create_initial_agents(
+        agent_count=config.agent_count,
+        world_size=config.motion.size,
+        circle_radius=config.motion.radius,
+        obstacles=config.obstacles,
+        steering_config=config.steering,
+        random_source=random_source,
+    )
+    trails_by_agent: dict[int, list[TrailPoint]] = {agent.id: [] for agent in agents}
     signal_markers: list[SignalMarker] = []
     paused = False
     running = True
-    selected = False
-    steering_enabled = False
-    target_position: Vec2 | None = None
-    active_detour: Vec2 | None = None
-    active_target_position: Vec2 | None = None
-    detour_position: Vec2 | None = None
+    selected_agent_id: int | None = None
+    steering_enabled = True
     trails_enabled = True
     show_hitboxes = False
 
@@ -551,25 +530,27 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
         while running:
             dt = clock.tick(config.fps) / 1000.0
             actions = handle_events(
-                paused,
-                state,
-                selected,
-                config.motion.radius,
+                paused=paused,
+                agents=agents,
+                selected_agent_id=selected_agent_id,
+                radius=config.motion.radius,
             )
             running = actions.running
             paused = actions.paused
-            selected = actions.selected
+            selected_agent_id = actions.selected_agent_id
 
             if actions.toggle_trails_requested:
                 trails_enabled = not trails_enabled
 
             if actions.clear_trails_requested:
-                trail_points = []
+                trails_by_agent = {agent.id: [] for agent in agents}
 
-            if actions.drop_signal_requested:
+            if actions.drop_signal_requested and agents:
+                selected_agent = get_agent_by_id(agents, selected_agent_id)
+                marker_source = selected_agent if selected_agent is not None else agents[0]
                 signal_markers = add_signal_marker(
                     signal_markers,
-                    state.position,
+                    marker_source.position,
                     config.signal_lifetime,
                 )
 
@@ -579,102 +560,82 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
             if actions.toggle_steering_requested:
                 steering_enabled = not steering_enabled
 
-            if actions.target_changed and actions.target_position is not None:
-                target_position, active_detour = apply_clicked_target(
-                    actions.target_position,
-                    config.obstacles,
-                    config.steering,
-                    config.motion.radius,
-                    active_detour,
-                )
+            if (
+                actions.target_changed
+                and actions.target_position is not None
+                and selected_agent_id is not None
+            ):
+                selected_agent = get_agent_by_id(agents, selected_agent_id)
+                if selected_agent is not None:
+                    safe_target, _ = apply_clicked_target(
+                        clicked_target=actions.target_position,
+                        obstacles=config.obstacles,
+                        config=config.steering,
+                        circle_radius=config.motion.radius,
+                        active_detour=selected_agent.active_detour,
+                    )
+                    agents = replace_agent(
+                        agents=agents,
+                        updated_agent=AgentState(
+                            id=selected_agent.id,
+                            name=selected_agent.name,
+                            position=selected_agent.position,
+                            velocity=selected_agent.velocity,
+                            acceleration=selected_agent.acceleration,
+                            color=selected_agent.color,
+                            target_position=safe_target,
+                            active_detour=None,
+                        ),
+                    )
 
             if actions.reset_requested:
-                state = make_initial_state(config.motion)
-                selected = False
-                active_detour = None
-
-            active_target_position = None
-            detour_position = None
-            detour_active = False
-
-            if running and not paused:
-                previous_position = state.position
-                if steering_enabled:
-                    target_choice = choose_active_steering_target(
-                        state.position,
-                        target_position,
-                        config.obstacles,
-                        config.steering,
-                        config.motion.radius,
-                        active_detour,
-                    )
-                    active_detour = target_choice.detour_point
-                    active_target_position = target_choice.active_target
-                    detour_position = target_choice.detour_point
-                    detour_active = target_choice.detour_active
-                    if active_target_position is None:
-                        desired_velocity = Vec2(0.0, 0.0)
-                    else:
-                        desired_velocity = desired_velocity_toward_target(
-                            state.position,
-                            active_target_position,
-                            config.steering,
-                        )
-                    steering_acceleration = steering_acceleration_toward_velocity(
-                        state.velocity,
-                        desired_velocity,
-                        config.steering.max_acceleration,
-                    )
-                    state = update_motion_with_acceleration(
-                        state,
-                        steering_acceleration,
-                        dt,
-                        config.motion,
-                    )
-                else:
-                    state = update_motion(state, read_input(), dt, config.motion)
-                collision = check_circle_against_obstacles(
-                    state.position,
-                    previous_position,
-                    state.velocity,
-                    config.motion.radius,
-                    config.obstacles,
+                agents = create_initial_agents(
+                    agent_count=config.agent_count,
+                    world_size=config.motion.size,
+                    circle_radius=config.motion.radius,
+                    obstacles=config.obstacles,
+                    steering_config=config.steering,
+                    random_source=random_source,
                 )
-                if collision.collided:
-                    state = MotionState(
-                        position=collision.position,
-                        velocity=collision.velocity,
-                        acceleration=state.acceleration,
-                    )
-                if trails_enabled:
-                    trail_points = add_trail_point(
-                        trail_points,
-                        state.position,
-                        config.trail_lifetime,
-                    )
+                trails_by_agent = {agent.id: [] for agent in agents}
+                selected_agent_id = None
 
-            trail_points = remove_expired_trail_points(age_trail_points(trail_points, dt))
+            if running and not paused and steering_enabled:
+                agents = update_agents(
+                    agents=agents,
+                    dt=dt,
+                    motion_config=config.motion,
+                    steering_config=config.steering,
+                    obstacles=config.obstacles,
+                    random_source=random_source,
+                )
+                for agent in agents:
+                    trails_by_agent.setdefault(agent.id, [])
+                    if trails_enabled:
+                        trails_by_agent[agent.id] = add_trail_point(
+                            trails_by_agent[agent.id],
+                            agent.position,
+                            config.trail_lifetime,
+                        )
+
+            trails_by_agent = age_and_prune_trails(trails_by_agent, dt)
             signal_markers = remove_expired_signal_markers(
                 age_signal_markers(signal_markers, dt)
             )
 
             draw_scene(
-                screen,
-                font,
-                state,
-                clock.get_fps(),
-                paused,
-                selected,
-                trails_enabled,
-                trail_points,
-                signal_markers,
-                show_hitboxes,
-                steering_enabled,
-                target_position,
-                active_target_position,
-                detour_position,
-                detour_active,
-                config,
+                screen=screen,
+                font=font,
+                agents=agents,
+                fps=clock.get_fps(),
+                paused=paused,
+                selected_agent_id=selected_agent_id,
+                trails_enabled=trails_enabled,
+                trails_by_agent=trails_by_agent,
+                signal_markers=signal_markers,
+                show_hitboxes=show_hitboxes,
+                steering_enabled=steering_enabled,
+                config=config,
             )
     finally:
         pygame.quit()

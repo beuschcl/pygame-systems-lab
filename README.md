@@ -20,25 +20,22 @@ python -m pip install -e ".[dev]"
 python -m pygame_systems_lab
 ```
 
-This launches **Motion Playground**, the current playable lab.
+This launches **Motion Playground (Lab 6: Multiple Agents)**.
 
 ## Motion Playground controls
 
-- Arrow keys: apply acceleration
-- A: toggle steering mode
-- Left click the circle: select it
-- Left click empty space: clear selection and set the steering target
+- A: toggle autonomous steering on or off
+- Left click an agent: select it
+- Left click empty space: set selected agent target (if no selected agent, no action)
 - Space: pause or unpause
 - T: toggle trails on or off
 - C: clear all trails
 - S: drop a signal marker
 - H: show or hide hitboxes
-- R: reset to the center
+- R: reset all agents
 - Escape or close window: quit
 
-The demo shows a moving circle, obstacle rectangles, a velocity vector, a steering target, a temporary detour point when a direct path is blocked, fading trails, fading signal markers, a debug overlay, and a right-side inspector panel when the circle is selected.
-
-Right now, the inspector panel is only a visual overlay. It does not shrink the motion world's bounds, so the circle can move underneath it. A later camera or layout lab may split the screen into a world viewport and a UI sidebar.
+The demo shows multiple autonomous agents that steer toward targets, obstacle rectangles, fading trails, fading signal markers, a debug overlay, and a right-side inspector panel for the selected agent.
 
 ## Run the test suite
 

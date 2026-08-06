@@ -8,6 +8,7 @@ from pygame_systems_lab.labs.motion import (
     point_is_inside_circle,
     speed_from_velocity,
     update_motion,
+    update_motion_with_acceleration,
 )
 
 
@@ -72,3 +73,19 @@ def test_point_is_inside_circle_checks_hit_testing() -> None:
 
 def test_speed_from_velocity_returns_magnitude() -> None:
     assert speed_from_velocity(Vec2(6.0, 8.0)) == 10.0
+
+
+def test_update_motion_with_acceleration_updates_state() -> None:
+    config = MotionConfig(friction=0.0)
+    start = make_initial_state(config)
+
+    updated = update_motion_with_acceleration(
+        start,
+        Vec2(20.0, 0.0),
+        0.5,
+        config,
+    )
+
+    assert updated.acceleration == Vec2(20.0, 0.0)
+    assert updated.velocity == Vec2(10.0, 0.0)
+    assert updated.position.x == start.position.x + 5.0

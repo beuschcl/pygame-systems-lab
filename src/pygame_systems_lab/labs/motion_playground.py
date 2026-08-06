@@ -23,6 +23,15 @@ from .motion import (
     point_is_inside_circle,
     speed_from_velocity,
     update_motion,
+    update_motion_with_acceleration,
+)
+from .steering import (
+    SteeringConfig,
+    apply_clicked_target,
+    choose_active_steering_target,
+    desired_velocity_toward_target,
+    distance_to_target,
+    steering_acceleration_toward_velocity,
 )
 
 
@@ -36,6 +45,9 @@ class PlaygroundActions:
     clear_trails_requested: bool = False
     drop_signal_requested: bool = False
     toggle_hitboxes_requested: bool = False
+    toggle_steering_requested: bool = False
+    target_position: Vec2 | None = None
+    target_changed: bool = False
 
 
 def default_obstacles() -> tuple[RectangleObstacle, ...]:
@@ -55,6 +67,9 @@ class PlaygroundConfig:
     obstacle_color: tuple[int, int, int] = (80, 110, 145)
     trail_color: tuple[int, int, int] = (110, 200, 255)
     signal_color: tuple[int, int, int] = (255, 120, 170)
+    target_color: tuple[int, int, int] = (130, 255, 150)
+    detour_color: tuple[int, int, int] = (255, 180, 110)
+    steering_line_color: tuple[int, int, int] = (130, 255, 150)
     vector_color: tuple[int, int, int] = (255, 220, 120)
     text_color: tuple[int, int, int] = (240, 240, 240)
     selection_ring_color: tuple[int, int, int] = (255, 255, 255)
@@ -66,10 +81,13 @@ class PlaygroundConfig:
     trail_radius: int = 6
     signal_radius: int = 10
     signal_thickness: int = 2
+    target_radius: int = 10
+    detour_radius: int = 8
     trail_lifetime: float = 1.6
     signal_lifetime: float = 2.4
     vector_scale: float = 0.15
     motion: MotionConfig = field(default_factory=MotionConfig)
+    steering: SteeringConfig = field(default_factory=SteeringConfig)
     obstacles: tuple[RectangleObstacle, ...] = field(default_factory=default_obstacles)
 
 
@@ -102,6 +120,9 @@ def handle_events(
     clear_trails_requested = False
     drop_signal_requested = False
     toggle_hitboxes_requested = False
+    toggle_steering_requested = False
+    target_position = None
+    target_changed = False
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -121,9 +142,16 @@ def handle_events(
                 drop_signal_requested = True
             elif event.key == pygame.K_h:
                 toggle_hitboxes_requested = True
+            elif event.key == pygame.K_a:
+                toggle_steering_requested = True
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             click_position = mouse_position_to_vec2(event.pos)
-            selected = point_is_inside_circle(click_position, state.position, radius)
+            if point_is_inside_circle(click_position, state.position, radius):
+                selected = True
+            else:
+                selected = False
+                target_position = click_position
+                target_changed = True
 
     return PlaygroundActions(
         running=running,
@@ -134,7 +162,22 @@ def handle_events(
         clear_trails_requested=clear_trails_requested,
         drop_signal_requested=drop_signal_requested,
         toggle_hitboxes_requested=toggle_hitboxes_requested,
+        toggle_steering_requested=toggle_steering_requested,
+        target_position=target_position,
+        target_changed=target_changed,
     )
+
+
+def format_target(target_position: Vec2 | None) -> str:
+    if target_position is None:
+        return "None"
+    return f"({target_position.x:.1f}, {target_position.y:.1f})"
+
+
+def target_distance_text(state: MotionState, target_position: Vec2 | None) -> str:
+    if target_position is None:
+        return "None"
+    return f"{distance_to_target(state.position, target_position):.1f}"
 
 
 def draw_debug_overlay(
@@ -147,6 +190,9 @@ def draw_debug_overlay(
     trail_count: int,
     signal_count: int,
     show_hitboxes: bool,
+    steering_enabled: bool,
+    target_position: Vec2 | None,
+    detour_active: bool,
     text_color: tuple[int, int, int],
 ) -> None:
     lines = [
@@ -158,6 +204,10 @@ def draw_debug_overlay(
         f"Trails: {trails_enabled} ({trail_count})",
         f"Signals: {signal_count}",
         f"Hitboxes: {show_hitboxes}",
+        f"Steering: {steering_enabled}",
+        f"Target: {format_target(target_position)}",
+        f"Target Distance: {target_distance_text(state, target_position)}",
+        f"Detour Active: {detour_active}",
     ]
 
     y = 10
@@ -179,6 +229,51 @@ def draw_velocity_vector(
         round(state.position.y + state.velocity.y * scale),
     )
     pygame.draw.line(screen, color, start, end, 3)
+
+
+def draw_target_marker(
+    screen: pygame.Surface,
+    target_position: Vec2,
+    color: tuple[int, int, int],
+    radius: int,
+) -> None:
+    center = (round(target_position.x), round(target_position.y))
+    pygame.draw.circle(
+        screen,
+        color,
+        center,
+        radius,
+        2,
+    )
+    pygame.draw.line(
+        screen,
+        color,
+        (center[0] - radius, center[1]),
+        (center[0] + radius, center[1]),
+        2,
+    )
+    pygame.draw.line(
+        screen,
+        color,
+        (center[0], center[1] - radius),
+        (center[0], center[1] + radius),
+        2,
+    )
+
+
+def draw_steering_line(
+    screen: pygame.Surface,
+    state: MotionState,
+    target_position: Vec2,
+    color: tuple[int, int, int],
+) -> None:
+    pygame.draw.line(
+        screen,
+        color,
+        (round(state.position.x), round(state.position.y)),
+        (round(target_position.x), round(target_position.y)),
+        2,
+    )
 
 
 def draw_obstacles(
@@ -297,6 +392,9 @@ def draw_inspector_panel(
     trail_count: int,
     signal_count: int,
     show_hitboxes: bool,
+    steering_enabled: bool,
+    target_position: Vec2 | None,
+    detour_active: bool,
     config: PlaygroundConfig,
 ) -> None:
     panel_width = config.inspector_width
@@ -318,6 +416,10 @@ def draw_inspector_panel(
         f"Trails: {trails_enabled} ({trail_count})",
         f"Signals: {signal_count}",
         f"Hitboxes: {show_hitboxes}",
+        f"Steering: {steering_enabled}",
+        f"Target: {format_target(target_position)}",
+        f"Target Distance: {target_distance_text(state, target_position)}",
+        f"Detour Active: {detour_active}",
     ]
 
     y = 16
@@ -338,12 +440,38 @@ def draw_scene(
     trail_points: list[TrailPoint],
     signal_markers: list[SignalMarker],
     show_hitboxes: bool,
+    steering_enabled: bool,
+    target_position: Vec2 | None,
+    active_target_position: Vec2 | None,
+    detour_position: Vec2 | None,
+    detour_active: bool,
     config: PlaygroundConfig,
 ) -> None:
     screen.fill(config.background_color)
     draw_trail_points(screen, trail_points, config)
     draw_signal_markers(screen, signal_markers, config)
     draw_obstacles(screen, config.obstacles, config.obstacle_color)
+    if target_position is not None:
+        draw_target_marker(
+            screen,
+            target_position,
+            config.target_color,
+            config.target_radius,
+        )
+    if detour_position is not None:
+        draw_target_marker(
+            screen,
+            detour_position,
+            config.detour_color,
+            config.detour_radius,
+        )
+    if steering_enabled and active_target_position is not None:
+        draw_steering_line(
+            screen,
+            state,
+            active_target_position,
+            config.steering_line_color,
+        )
     draw_velocity_vector(screen, state, config.vector_scale, config.vector_color)
     if show_hitboxes:
         draw_hitboxes(
@@ -376,6 +504,9 @@ def draw_scene(
         len(trail_points),
         len(signal_markers),
         show_hitboxes,
+        steering_enabled,
+        target_position,
+        detour_active,
         config.text_color,
     )
     if selected:
@@ -388,6 +519,9 @@ def draw_scene(
             len(trail_points),
             len(signal_markers),
             show_hitboxes,
+            steering_enabled,
+            target_position,
+            detour_active,
             config,
         )
     pygame.display.flip()
@@ -405,6 +539,11 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
     paused = False
     running = True
     selected = False
+    steering_enabled = False
+    target_position: Vec2 | None = None
+    active_detour: Vec2 | None = None
+    active_target_position: Vec2 | None = None
+    detour_position: Vec2 | None = None
     trails_enabled = True
     show_hitboxes = False
 
@@ -437,13 +576,63 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
             if actions.toggle_hitboxes_requested:
                 show_hitboxes = not show_hitboxes
 
+            if actions.toggle_steering_requested:
+                steering_enabled = not steering_enabled
+
+            if actions.target_changed and actions.target_position is not None:
+                target_position, active_detour = apply_clicked_target(
+                    actions.target_position,
+                    config.obstacles,
+                    config.steering,
+                    config.motion.radius,
+                    active_detour,
+                )
+
             if actions.reset_requested:
                 state = make_initial_state(config.motion)
                 selected = False
+                active_detour = None
+
+            active_target_position = None
+            detour_position = None
+            detour_active = False
 
             if running and not paused:
                 previous_position = state.position
-                state = update_motion(state, read_input(), dt, config.motion)
+                if steering_enabled:
+                    target_choice = choose_active_steering_target(
+                        state.position,
+                        target_position,
+                        config.obstacles,
+                        config.steering,
+                        config.motion.radius,
+                        active_detour,
+                    )
+                    active_detour = target_choice.detour_point
+                    active_target_position = target_choice.active_target
+                    detour_position = target_choice.detour_point
+                    detour_active = target_choice.detour_active
+                    if active_target_position is None:
+                        desired_velocity = Vec2(0.0, 0.0)
+                    else:
+                        desired_velocity = desired_velocity_toward_target(
+                            state.position,
+                            active_target_position,
+                            config.steering,
+                        )
+                    steering_acceleration = steering_acceleration_toward_velocity(
+                        state.velocity,
+                        desired_velocity,
+                        config.steering.max_acceleration,
+                    )
+                    state = update_motion_with_acceleration(
+                        state,
+                        steering_acceleration,
+                        dt,
+                        config.motion,
+                    )
+                else:
+                    state = update_motion(state, read_input(), dt, config.motion)
                 collision = check_circle_against_obstacles(
                     state.position,
                     previous_position,
@@ -480,6 +669,11 @@ def run(config: PlaygroundConfig = DEFAULT_CONFIG) -> None:
                 trail_points,
                 signal_markers,
                 show_hitboxes,
+                steering_enabled,
+                target_position,
+                active_target_position,
+                detour_position,
+                detour_active,
                 config,
             )
     finally:

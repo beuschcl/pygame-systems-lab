@@ -43,6 +43,17 @@ def test_unavailable_targets_are_ignored() -> None:
     assert selected == targets[1]
 
 
+def test_undiscovered_targets_are_ignored() -> None:
+    targets = [
+        TaskTarget(id=10, kind="sample", position=Vec2(3.0, 0.0), discovered=False),
+        TaskTarget(id=11, kind="sample", position=Vec2(8.0, 0.0), discovered=True),
+    ]
+
+    selected = choose_nearest_available_target(Vec2(0.0, 0.0), targets)
+
+    assert selected == targets[1]
+
+
 def test_tie_breaking_uses_target_id() -> None:
     targets = [
         TaskTarget(id=30, kind="sample", position=Vec2(6.0, 8.0)),
@@ -75,12 +86,16 @@ def test_empty_agent_with_no_available_targets_waits() -> None:
         available=False,
     )
 
-    intent = plan_empty_agent_intent(agent, [unavailable_target])
+    intent = plan_empty_agent_intent(
+        agent,
+        [unavailable_target],
+        wander_target=Vec2(6.0, 9.0),
+    )
 
-    assert intent.task_state is AgentTaskState.WAITING
-    assert intent.target_position is None
+    assert intent.task_state is AgentTaskState.WANDERING
+    assert intent.target_position == Vec2(6.0, 9.0)
     assert intent.target_id is None
-    assert intent.should_move is False
+    assert intent.should_move is True
 
 
 def test_carrying_agent_returns_to_base() -> None:

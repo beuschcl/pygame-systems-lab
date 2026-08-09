@@ -13,6 +13,8 @@ class AgentSettings:
     radius: float
     interaction_radius: float
     base_interaction_radius: float
+    detection_radius: float = 72.0
+    wander_step_distance: float = 48.0
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ DEFAULT_ENGINE_SETTINGS = EngineSettings(
         radius=12.0,
         interaction_radius=48.0,
         base_interaction_radius=96.0,
+        detection_radius=96.0,
+        wander_step_distance=64.0,
     ),
     world=WorldSettings(
         width=800,

@@ -21,6 +21,8 @@ def test_default_engine_settings_are_positive_and_usable() -> None:
     assert settings.agent.radius > 0.0
     assert settings.agent.interaction_radius > 0.0
     assert settings.agent.base_interaction_radius > 0.0
+    assert settings.agent.detection_radius > 0.0
+    assert settings.agent.wander_step_distance > 0.0
     assert settings.world.width > 0
     assert settings.world.height > 0
 
@@ -31,6 +33,8 @@ def test_engine_setting_dataclasses_are_frozen() -> None:
         radius=10.0,
         interaction_radius=24.0,
         base_interaction_radius=48.0,
+        detection_radius=60.0,
+        wander_step_distance=20.0,
     )
     world = WorldSettings(width=320, height=240)
     settings = EngineSettings(movement=movement, agent=agent, world=world)

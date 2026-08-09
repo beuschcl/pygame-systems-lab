@@ -1,8 +1,10 @@
 from dataclasses import dataclass, replace
+from math import cos, sin, tau
 
 from .agent import AgentState
 from .geometry import Vec2
 from .interactions import (
+    InteractionKind,
     InteractionResult,
     InteractionTarget,
     claim_target,
@@ -44,6 +46,7 @@ def convert_interaction_targets_to_task_targets(
             kind=target.kind,
             position=target.position,
             available=target.available,
+            discovered=target.discovered,
         )
         for target in targets
     )
@@ -56,10 +59,16 @@ def step_agent(
     settings: EngineSettings,
     dt: float,
 ) -> tuple[AgentStepResult, tuple[InteractionTarget, ...]]:
+    discovered_targets = discover_targets_in_range(
+        position=agent.position,
+        targets=targets,
+        detection_radius=settings.agent.detection_radius,
+    )
     intent = plan_agent_intent(
         agent=agent,
-        available_targets=convert_interaction_targets_to_task_targets(targets),
+        available_targets=convert_interaction_targets_to_task_targets(discovered_targets),
         base_position=base_position,
+        wander_target=choose_wander_target(agent, settings),
     )
 
     if intent.should_move:
@@ -88,7 +97,7 @@ def step_agent(
         task_state=intent.task_state,
         target_position=intent.target_position,
     )
-    updated_targets = list(targets)
+    updated_targets = list(discovered_targets)
     interaction_result: InteractionResult | None = None
 
     if updated_agent.carried_item_id is not None:
@@ -97,6 +106,23 @@ def step_agent(
             base_position=base_position,
             base_radius=settings.agent.base_interaction_radius,
         )
+        if (
+            interaction_result.succeeded
+            and interaction_result.kind is InteractionKind.DROPOFF
+        ):
+            next_intent = plan_agent_intent(
+                agent=updated_agent,
+                available_targets=convert_interaction_targets_to_task_targets(
+                    tuple(updated_targets)
+                ),
+                base_position=base_position,
+                wander_target=choose_wander_target(updated_agent, settings),
+            )
+            updated_agent = replace(
+                updated_agent,
+                task_state=next_intent.task_state,
+                target_position=next_intent.target_position,
+            )
     elif intent.target_id is not None:
         target_index = _target_index_by_id(updated_targets, intent.target_id)
         if target_index is not None:
@@ -156,3 +182,32 @@ def _target_index_by_id(targets: list[InteractionTarget], target_id: int) -> int
         if target.id == target_id:
             return index
     return None
+
+
+def discover_targets_in_range(
+    position: Vec2,
+    targets: tuple[InteractionTarget, ...],
+    detection_radius: float,
+) -> tuple[InteractionTarget, ...]:
+    updated_targets: list[InteractionTarget] = []
+    for target in targets:
+        if target.discovered:
+            updated_targets.append(target)
+            continue
+
+        if position.distance_to(target.position) <= detection_radius:
+            updated_targets.append(replace(target, discovered=True))
+            continue
+
+        updated_targets.append(target)
+    return tuple(updated_targets)
+
+
+def choose_wander_target(agent: AgentState, settings: EngineSettings) -> Vec2:
+    heading_angle = (agent.id * 1.61803398875) % tau
+    heading = Vec2(cos(heading_angle), sin(heading_angle))
+    candidate = agent.position + (heading * settings.agent.wander_step_distance)
+    return Vec2(
+        min(max(candidate.x, 0.0), float(settings.world.width)),
+        min(max(candidate.y, 0.0), float(settings.world.height)),
+    )

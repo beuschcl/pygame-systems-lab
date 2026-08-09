@@ -20,6 +20,7 @@ class InteractionTarget:
     radius: float
     available: bool = True
     claimed_by_id: int | None = None
+    discovered: bool = True
 
 
 @dataclass(frozen=True)
